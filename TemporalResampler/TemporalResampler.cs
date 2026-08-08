@@ -142,6 +142,45 @@ public class TemporalResampler : AsyncPositionedPipelineElement<IDeviceReport>
         if (State is ITabletReport tabletReport)
             pressure = tabletReport.Pressure;
 
+        // PTK-x70 press/lift mitigation adapted from The Saturn Collection.
+        // Preserve pressure transitions, but reject the characteristic stale
+        // position report emitted on pen release.
+        uint rawPressure = (uint)pressure;
+        Vector2 rawPosition = report.Position;
+
+        if (hasLastRawReport)
+        {
+            bool penDown = rawPressure > 0 && lastRawPressure == 0;
+            bool duplicatePenUp = rawPressure == 0 && lastRawPressure > 0 && rawPosition.Y == lastRawPosition.Y;
+
+            if (duplicatePenUp)
+            {
+                lastRawPressure = rawPressure;
+                lastRawPosition = rawPosition;
+
+                // Keep the release itself while leaving position history untouched.
+                // Set pressure across the interpolation history so UpdateState emits
+                // the release immediately rather than interpolating an old press.
+                for (int i = 0; i < stablePoints.Length; i++)
+                    stablePoints[i][1] = rawPressure;
+                sPressure = rawPressure;
+                pressureRecovery = 4;
+
+                if (extraFrames)
+                    UpdateState();
+
+                return;
+            }
+
+            // PTK-x70 press reports can also be unreliable for prediction.
+            if (penDown)
+                pressureRecovery = 5;
+        }
+
+        lastRawPressure = rawPressure;
+        lastRawPosition = rawPosition;
+        hasLastRawReport = true;
+
         if (consumeDelta > 0.03f || consumeDelta < 0.0001f)
         {
             ResetValues(report.Position, (uint)pressure);
@@ -178,7 +217,14 @@ public class TemporalResampler : AsyncPositionedPipelineElement<IDeviceReport>
 
         // prediction
         Vector2 predict = smoothedPoints[0];
-        if (frameShift > 0f) 
+        if (pressureRecovery > 0)
+        {
+            // For a few reports after a PTK-x70 pressure transition, follow the
+            // filtered sensor position instead of extrapolating from bad data.
+            kf = new KalmanVector2(4, smoothedPoints[0]);
+            pressureRecovery--;
+        }
+        else if (frameShift > 0f) 
         {
             predict = kf.Update(smoothedPoints[0], secAvg);
             float predictCoe = (followUnits > 0f) ? Math.Clamp(Vector2.Distance(smoothedPoints[0], smoothedPoints[2]) / followUnits - 1f, 0, 1) : 1f;
@@ -252,6 +298,10 @@ public class TemporalResampler : AsyncPositionedPipelineElement<IDeviceReport>
     void ResetValues(Vector2 p0, uint pressure)
     {
         kf = new KalmanVector2(4, p0);
+        lastRawPressure = pressure;
+        lastRawPosition = p0;
+        hasLastRawReport = true;
+        pressureRecovery = 0;
         smoothedPoints = Enumerable.Repeat(p0, smoothedPoints.Length).ToArray();
         stablePoints = Enumerable.Repeat(new object[] { p0, pressure }, stablePoints.Length).ToArray();
         latestReport = runningStopwatch.Elapsed;
@@ -322,6 +372,14 @@ public class TemporalResampler : AsyncPositionedPipelineElement<IDeviceReport>
     TimeSpan latestReport = TimeSpan.Zero;
     float sPressure;
     float rpsAvg = 200f, tOffset;
+
+    // PTK-x70 press/lift mitigation state. This fork is specifically for PTK-470,
+    // so the mitigation is always enabled instead of importing tablet detection.
+    uint lastRawPressure;
+    Vector2 lastRawPosition;
+    bool hasLastRawReport;
+    int pressureRecovery;
+
     HPETDeltaStopwatch reportStopwatch = new HPETDeltaStopwatch(false);
     HPETDeltaStopwatch runningStopwatch = new HPETDeltaStopwatch(true);
     HPETDeltaStopwatch logStopwatch = new HPETDeltaStopwatch(true);
