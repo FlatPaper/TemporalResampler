@@ -1,0 +1,36 @@
+name: Build TemporalResampler
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 6
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '6.0.x'
+
+      - name: Restore
+        run: dotnet restore TemporalResampler/TemporalResampler.csproj
+
+      - name: Build
+        run: dotnet build TemporalResampler/TemporalResampler.csproj --configuration Release --no-restore
+
+      - name: Upload compiled plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: TemporalResampler-PTK470
+          path: |
+            TemporalResampler/bin/Release/net6.0/TemporalResampler.dll
+            TemporalResampler/bin/Release/net6.0/TemporalResampler.pdb
+          if-no-files-found: error
